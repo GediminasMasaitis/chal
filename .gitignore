@@ -14,3 +14,5 @@ chal
 
 # Dev test suite
 dev_test*
+
+.venv
