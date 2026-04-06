@@ -2,6 +2,42 @@
 """Strip comments, whitespace, and rename identifiers in C source."""
 import subprocess, sys, os, re, itertools, string
 
+# --- Preprocessor ifdef evaluation ---
+
+def eval_ifdefs(source, defines):
+    """Evaluate #ifdef/#ifndef/#else/#endif, keeping only active branches."""
+    out = []
+    stack = []  # stack of (active, seen_true)
+    for line in source.splitlines(True):
+        stripped = line.strip()
+        if stripped.startswith('#ifdef '):
+            sym = stripped.split()[1]
+            active = all(a for a, _ in stack)  # parent must be active
+            matches = sym in defines
+            stack.append((active and matches, active and matches))
+            continue
+        elif stripped.startswith('#ifndef '):
+            sym = stripped.split()[1]
+            active = all(a for a, _ in stack)
+            matches = sym not in defines
+            stack.append((active and matches, active and matches))
+            continue
+        elif stripped == '#else':
+            if stack:
+                prev_active, seen_true = stack[-1]
+                parent_active = all(a for a, _ in stack[:-1])
+                now_active = parent_active and not seen_true
+                stack[-1] = (now_active, seen_true or now_active)
+            continue
+        elif stripped == '#endif':
+            if stack:
+                stack.pop()
+            continue
+        # Include line only if all levels are active
+        if all(a for a, _ in stack):
+            out.append(line)
+    return ''.join(out)
+
 # --- Whitespace minification ---
 
 def is_ident(c):
@@ -163,11 +199,21 @@ def rename_identifiers(source):
 
 # --- Main pipeline ---
 
-def minify(src, dst):
+def minify(src, dst, defines=None):
+    # Evaluate #ifdef/#endif before gcc preprocessing
+    with open(src) as f:
+        source = f.read()
+    source = eval_ifdefs(source, defines or set())
+    # Write to temp file for gcc
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False)
+    tmp.write(source)
+    tmp.close()
     result = subprocess.run(
-        ['gcc', '-fpreprocessed', '-dD', '-E', src],
+        ['gcc', '-fpreprocessed', '-dD', '-E', tmp.name],
         capture_output=True, text=True
     )
+    os.unlink(tmp.name)
     lines = []
     for line in result.stdout.splitlines():
         line = line.rstrip()
@@ -233,6 +279,14 @@ def minify(src, dst):
     print(f"{src}: {os.path.getsize(src)} -> {dst}: {os.path.getsize(dst)}")
 
 if __name__ == '__main__':
-    src = sys.argv[1] if len(sys.argv) > 1 else 'chal/src/chal.c'
-    dst = sys.argv[2] if len(sys.argv) > 2 else 'chal/src/chal_mini.c'
-    minify(src, dst)
+    # Parse -DFOO flags and positional args
+    defines = set()
+    args = []
+    for a in sys.argv[1:]:
+        if a.startswith('-D'):
+            defines.add(a[2:])
+        else:
+            args.append(a)
+    src = args[0] if len(args) > 0 else 'chal/src/chal.c'
+    dst = args[1] if len(args) > 1 else 'chal/src/chal_mini.c'
+    minify(src, dst, defines)

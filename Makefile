@@ -33,6 +33,11 @@ minify:
 	xz -f -k src/chal_mini.c
 	ls -l src/chal_mini.c.xz
 
+minify-full:
+	python minify.py -DFULL src/chal.c src/chal_mini.c
+	xz -f -k src/chal_mini.c
+	ls -l src/chal_mini.c.xz
+
 loader: minify
 	printf '#!/bin/sh\nT=`mktemp`\ntail -n +5 "$$0"|xz -d|cc -o $$T -O3 -xc - -lm\n(sleep 3;rm $$T)&exec $$T\n' > bin/chal.sh
 	cat src/chal_mini.c.xz >> bin/chal.sh
