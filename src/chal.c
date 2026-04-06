@@ -2065,13 +2065,24 @@ void uci_loop(void) {
    ENTRY POINT
    =============================================================== */
 
-int main(void) {
+int main(int argc, char** argv) {
     setbuf(stdout, NULL);
     memset(see_cleared, 0, sizeof(see_cleared));
     init_zobrist();
     init_lmr();
     parse_fen(STARTPOS);
     hash_key = generate_hash();
+#ifdef FULL
+    if (argc > 1 && !strcmp(argv[1], "bench")) {
+        tt = calloc((size_t)tt_size, sizeof(TTEntry));
+        time_budget_ms = 0;
+        search_root(15);
+        printf("bench nodes %" PRId64 "\n", nodes_searched);
+        free(tt);
+        return 0;
+    }
+#endif
+    (void)argc; (void)argv;
     uci_loop();
     return 0;
 }

@@ -1,6 +1,6 @@
 VERSION = 1.3.2
 CC      = gcc
-CFLAGS  = -O2 -Wall -Wextra -pedantic -std=gnu99 -DVERSION=\"$(VERSION)\"
+CFLAGS  = -O2 -Wall -Wextra -pedantic -std=gnu99 -DFULL -DVERSION=\"$(VERSION)\"
 LDFLAGS = -lm
 
 # Cross-platform
@@ -21,7 +21,7 @@ all: $(TARGET)
 debug: CFLAGS = -g -O0 -Wall -Wextra -pedantic -std=gnu99 -DVERSION=\"$(VERSION)\"
 debug: $(TARGET)
 
-$(TARGET): src/chal.c
+$(TARGET): src/chal.c Makefile
 	$(MKDIR)
 	$(CC) $(CFLAGS) src/chal.c -o $(TARGET) $(LDFLAGS)
 
