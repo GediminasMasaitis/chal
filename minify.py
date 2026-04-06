@@ -1,6 +1,55 @@
 #!/usr/bin/env python3
 """Strip comments, whitespace, and rename identifiers in C source."""
-import subprocess, sys, os, re, itertools, string
+import sys, os, re, itertools, string
+
+# --- Comment stripping ---
+
+def strip_comments(source):
+    """Remove C comments (/* ... */ and // ...) while preserving string/char literals."""
+    out = []
+    i = 0
+    n = len(source)
+    while i < n:
+        # String literal
+        if source[i] == '"':
+            j = i + 1
+            while j < n and source[j] != '"':
+                if source[j] == '\\' and j + 1 < n:
+                    j += 1
+                j += 1
+            j += 1  # closing quote
+            out.append(source[i:j])
+            i = j
+        # Char literal
+        elif source[i] == "'":
+            j = i + 1
+            while j < n and source[j] != "'":
+                if source[j] == '\\' and j + 1 < n:
+                    j += 1
+                j += 1
+            j += 1
+            out.append(source[i:j])
+            i = j
+        # Block comment
+        elif source[i:i+2] == '/*':
+            j = source.find('*/', i + 2)
+            if j == -1:
+                i = n
+            else:
+                # Preserve newlines inside block comments so line numbers don't shift
+                out.append(' ')
+                i = j + 2
+        # Line comment
+        elif source[i:i+2] == '//':
+            j = source.find('\n', i)
+            if j == -1:
+                i = n
+            else:
+                i = j  # keep the newline
+        else:
+            out.append(source[i])
+            i += 1
+    return ''.join(out)
 
 # --- Preprocessor ifdef evaluation ---
 
@@ -12,7 +61,7 @@ def eval_ifdefs(source, defines):
         stripped = line.strip()
         if stripped.startswith('#ifdef '):
             sym = stripped.split()[1]
-            active = all(a for a, _ in stack)  # parent must be active
+            active = all(a for a, _ in stack)
             matches = sym in defines
             stack.append((active and matches, active and matches))
             continue
@@ -33,7 +82,6 @@ def eval_ifdefs(source, defines):
             if stack:
                 stack.pop()
             continue
-        # Include line only if all levels are active
         if all(a for a, _ in stack):
             out.append(line)
     return ''.join(out)
@@ -106,7 +154,7 @@ DO_NOT_RENAME = frozenset(
     'static struct switch typedef typeof union unsigned void volatile while '
     # C alternative tokens
     'and or not and_eq or_eq not_eq xor xor_eq bitand bitor compl '
-    # Standard library functions used in chal.c
+    # Standard library functions
     'printf fprintf sscanf sprintf snprintf scanf '
     'strlen strstr strncmp strcmp strcpy strcat memset memcpy memmove '
     'calloc malloc realloc free atoi atol atof strtol strtod setbuf setvbuf '
@@ -114,7 +162,7 @@ DO_NOT_RENAME = frozenset(
     'tolower toupper isupper islower isalpha isdigit isalnum isspace isxdigit '
     'putchar getchar '
     'abs fabs log log2 log10 round ceil floor sqrt pow exp fmax fmin '
-    'fgets fputs puts getchar putchar fflush fopen fclose fread fwrite '
+    'fgets fputs puts fflush fopen fclose fread fwrite '
     # Standard types
     'size_t int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t '
     'clock_t FILE '
@@ -146,17 +194,13 @@ TOKEN_RE = re.compile(
 
 def tokenize_c(source):
     tokens = []
-    pos = 0
     for line in source.split('\n'):
-        # Handle #include <...> specially — don't tokenize the header path
         if line.lstrip().startswith('#include'):
             tokens.append(('pp_include', line))
             tokens.append(('newline', '\n'))
             continue
         for m in TOKEN_RE.finditer(line):
-            kind = m.lastgroup
-            text = m.group()
-            tokens.append((kind, text))
+            tokens.append((m.lastgroup, m.group()))
         tokens.append(('newline', '\n'))
     return tokens
 
@@ -172,27 +216,19 @@ def short_name_gen(skip):
 
 def rename_identifiers(source):
     tokens = tokenize_c(source)
-    # Count identifier frequencies
     freq = {}
     for kind, text in tokens:
         if kind == 'ident' and text not in DO_NOT_RENAME:
             freq[text] = freq.get(text, 0) + 1
-    # Sort by frequency descending, then alphabetically for stability
     sorted_idents = sorted(freq.keys(), key=lambda x: (-freq[x], x))
-    # Generate rename map
     gen = short_name_gen(DO_NOT_RENAME)
     rename_map = {}
     for ident in sorted_idents:
         rename_map[ident] = next(gen)
-    # Apply renames
     out = []
     for kind, text in tokens:
         if kind == 'ident' and text in rename_map:
             out.append(rename_map[text])
-        elif kind == 'pp_include':
-            out.append(text)
-        elif kind == 'newline':
-            out.append(text)
         else:
             out.append(text)
     return ''.join(out)
@@ -200,24 +236,17 @@ def rename_identifiers(source):
 # --- Main pipeline ---
 
 def minify(src, dst, defines=None):
-    # Evaluate #ifdef/#endif before gcc preprocessing
     with open(src) as f:
         source = f.read()
+    # 1. Evaluate #ifdef/#endif
     source = eval_ifdefs(source, defines or set())
-    # Write to temp file for gcc
-    import tempfile
-    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.c', delete=False)
-    tmp.write(source)
-    tmp.close()
-    result = subprocess.run(
-        ['gcc', '-fpreprocessed', '-dD', '-E', tmp.name],
-        capture_output=True, text=True
-    )
-    os.unlink(tmp.name)
+    # 2. Strip comments
+    source = strip_comments(source)
+    # 3. Minify whitespace and join lines
     lines = []
-    for line in result.stdout.splitlines():
+    for line in source.splitlines():
         line = line.rstrip()
-        if not line or line.startswith('# ') and line.split()[1].isdigit():
+        if not line:
             continue
         stripped = line.lstrip()
         if stripped.startswith('#include'):
@@ -248,9 +277,9 @@ def minify(src, dst, defines=None):
     if buf:
         out.append(_join_code(buf))
     content = '\n'.join(out) + '\n'
-    # Rename identifiers
+    # 4. Rename identifiers
     content = rename_identifiers(content)
-    # Re-minify whitespace after renaming (shorter names may allow removing spaces)
+    # 5. Re-minify whitespace after renaming
     final_lines = []
     for line in content.split('\n'):
         if not line:
@@ -279,7 +308,6 @@ def minify(src, dst, defines=None):
     print(f"{src}: {os.path.getsize(src)} -> {dst}: {os.path.getsize(dst)}")
 
 if __name__ == '__main__':
-    # Parse -DFOO flags and positional args
     defines = set()
     args = []
     for a in sys.argv[1:]:
