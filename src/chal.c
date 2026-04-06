@@ -2034,7 +2034,9 @@ void uci_loop(void) {
 
             int  depth = MAX_PLY;
             int64_t wtime = 0, btime = 0, movestogo = 20, winc = 0, binc = 0;
+#ifdef FULL
             getval(line, "depth", "%d", &depth);
+#endif
             getval(line, "wtime", "%" SCNd64, &wtime);
             getval(line, "btime", "%" SCNd64, &btime);
             getval(line, "movestogo", "%" SCNd64, &movestogo);
