@@ -66,7 +66,9 @@
 #include <inttypes.h>
 #include <math.h>
 
+#ifdef FULL
 #define CHAL_VERSION "1.4.0"
+#endif
 
 /* ===============================================================
    S1  CONSTANTS & TYPES
@@ -196,8 +198,10 @@ Move killers[MAX_PLY][2];
    evaluations automatically write themselves to the 0th element array.
 */
 
+#ifdef FULL
 Move pv[MAX_PLY][MAX_PLY];
 int  pv_length[MAX_PLY];
+#endif
 
 /* HISTORY TABLE
    hist[from][to] holds a score in [-16000, 16000]:
@@ -245,13 +249,12 @@ unsigned int castle_rights;    /* bits: 1=WO-O  2=WO-O-O  4=BO-O  8=BO-O-O */
 int count[2][7];               /* count[color][piece_type], piece_type 1..6  */
 HASH hash_key;
 
-int64_t nodes_searched; int root_depth; int best_root_move; /* search telemetry, reported in UCI info lines */
+int best_root_move;
+#ifdef FULL
+int64_t nodes_searched; int root_depth; /* search telemetry, reported in UCI info lines */
+#endif
 
-/* Time control -- set by the go command handler before calling search_root.
-   time_budget_ms = milliseconds we are allowed to spend on this move.
-   0 means no time limit: search_root respects only max_depth.
-   search_root checks the clock after each completed depth iteration and
-   stops early if the elapsed time exceeds the budget. */
+/* Time control -- set by the go command handler before calling search_root. */
 int64_t time_budget_ms;
 
 /* root_ply: value of ply when search_root() was called.
@@ -794,8 +797,12 @@ void parse_fen(const char* fen) {
     for (int i = 0; i < 128; i++) board[i] = EMPTY;
     castle_rights = 0; ep_square = SQ_NONE; ply = 0; hash_key = 0;
     memset(count, 0, sizeof(count));
-    memset(killers, 0, sizeof(killers)); memset(pv, 0, sizeof(pv));
-    memset(pv_length, 0, sizeof(pv_length)); memset(hist, 0, sizeof(hist));
+    memset(killers, 0, sizeof(killers));
+#ifdef FULL
+    memset(pv, 0, sizeof(pv));
+    memset(pv_length, 0, sizeof(pv_length));
+#endif
+    memset(hist, 0, sizeof(hist));
 
     while (*fen && *fen != ' ') {
         if (*fen == '/') { file = 0; rank--; }
@@ -1256,24 +1263,12 @@ void print_move(Move m) {
     if (pr && pr < 7) putchar(promo_ch[pr]);
 }
 
+#ifdef FULL
 static void print_pv(void) {
     for (int k = 0; k < pv_length[0]; k++) { putchar(' '); print_move(pv[0][k]); }
 }
 
 void print_result(int best_sc) {
-    /* UCI info line: depth, score, nodes, time, pv
-   MATE SCORE FORMAT
-   -----------------
-   The UCI spec requires two distinct score tokens:
-     "score cp X"    -- normal centipawn score
-     "score mate N"  -- N moves to checkmate
-                       positive N: we deliver mate
-                       negative N: we are being mated
-   We detect a mate score by testing abs(score) > MATE - MAX_PLY.
-   The move-count formula:
-     mating:  N =  (MATE - score + 1) / 2
-     mated:   N = -(MATE + score + 1) / 2
-     */
     int64_t ms = (int64_t)(((int64_t)(clock() - t_start) * 1000) / CLOCKS_PER_SEC);
     int64_t nps = ms ? 1000 * nodes_searched / (clock() - t_start) : 0;
     if (best_sc > MATE - MAX_PLY) printf("info depth %d score mate %d nodes %" PRId64 " time %" PRId64 " nps %" PRId64 " pv", root_depth, (MATE - best_sc + 1) / 2, nodes_searched, ms, nps);
@@ -1281,6 +1276,7 @@ void print_result(int best_sc) {
     else    printf("info depth %d score cp %d nodes %" PRId64 " time %" PRId64 " nps %" PRId64 " pv", root_depth, best_sc, nodes_searched, ms, nps);
     print_pv(); printf("\n"); fflush(stdout);
 }
+#endif
 
 /* ---------------------------------------------------------------
    qsearch  -- quiescence search (captures only)
@@ -1427,21 +1423,22 @@ static inline int is_bad_capture(int from, int to) {
 static int qsearch(int alpha, int beta, int sply) {
     Move moves[256]; int best_sc, sc;
 
+#ifdef FULL
     pv_length[sply] = sply;
+    nodes_searched++;
+#endif
 
-    /* Time check -- same cadence as main search */
-    if ((nodes_searched & 1023) == 0 && time_budget_ms > 0) {
+    /* Time check */
+    if (time_over_flag) return 0;
+    if (time_budget_ms > 0) {
         int64_t ms = (int64_t)(((int64_t)(clock() - t_start) * 1000) / CLOCKS_PER_SEC);
         if (ms >= time_budget_ms) { time_over_flag = 1; return 0; }
     }
-    if (time_over_flag) return 0;
 
     /* Stand-pat: static eval as lower bound (we can always stop capturing) */
     best_sc = evaluate();
     if (best_sc >= beta) return best_sc;
     if (best_sc > alpha) alpha = best_sc;
-
-    nodes_searched++;
 
     int cnt = generate_captures(moves);
     int scores[256];
@@ -1474,11 +1471,13 @@ static int qsearch(int alpha, int beta, int sply) {
         if (sc > best_sc) best_sc = sc;
         if (sc > alpha) {
             alpha = sc;
+#ifdef FULL
             if (!time_over_flag && moves[i] != 0) {
                 pv[sply][sply] = moves[i];
                 for (int k_ = sply + 1; k_ < pv_length[sply + 1]; k_++) pv[sply][k_] = pv[sply + 1][k_];
                 pv_length[sply] = pv_length[sply + 1];
             }
+#endif
         }
         if (alpha >= beta) break;
     }
@@ -1512,19 +1511,16 @@ int search(int depth, int alpha, int beta, int sply, int was_null) {
     int is_pv = (beta - alpha > 1); /* PV node: wide window, not a null-window probe */
     TTEntry* e = &tt[hash_key % (HASH)tt_size];
 
-    /* Clear PV at this ply before any early returns (TT hits, repetition).
-       The parent reads pv_length[sply] to splice in the child continuation;
-       it must equal sply (empty) rather than a stale value. */
+#ifdef FULL
     pv_length[sply] = sply;
+#endif
 
-    /* HARD TIME LIMIT CHECK
-       Every 1024 nodes, check if we have exceeded our absolute time budget.
-       If we have, abort the search tree immediately to prevent flagging. */
-    if ((nodes_searched & 1023) == 0 && time_budget_ms > 0) {
+    /* HARD TIME LIMIT CHECK */
+    if (time_over_flag) return 0;
+    if (time_budget_ms > 0) {
         int64_t ms = (int64_t)(((int64_t)(clock() - t_start) * 1000) / CLOCKS_PER_SEC);
         if (ms >= time_budget_ms) { time_over_flag = 1; return 0; }
     }
-    if (time_over_flag) return 0;
 
     /* Drop into quiescence search at the horizon */
     if (depth <= 0) return qsearch(alpha, beta, sply);
@@ -1589,7 +1585,9 @@ int search(int depth, int alpha, int beta, int sply, int was_null) {
     }
 
     best_sc = -INF;
+#ifdef FULL
     nodes_searched++;
+#endif
 
     /* Cache whether the side to move is currently in check.
        RFP, NMP, and IIR all guard on this -- compute once, reuse three times. */
@@ -1745,14 +1743,15 @@ int search(int depth, int alpha, int beta, int sply, int was_null) {
         if (sc > alpha) {
             alpha = sc;
             best = moves[i];
-            /* Triangular PV update: store this move, then copy the child
-               ply's continuation into the current row of the table. */
+            if (sply == 0) best_root_move = moves[i];
+#ifdef FULL
             if (!time_over_flag && moves[i] != 0) {
                 pv[sply][sply] = moves[i];
                 for (int k_ = sply + 1; k_ < pv_length[sply + 1]; k_++) pv[sply][k_] = pv[sply + 1][k_];
                 pv_length[sply] = pv_length[sply + 1];
-                if (sply == 0) { best_root_move = moves[i]; print_result(best_sc); }
+                if (sply == 0) print_result(best_sc);
             }
+#endif
         }
         if (alpha >= beta) {
             if (!is_cap && !move_promo(moves[i])) {
@@ -1779,7 +1778,7 @@ int search(int depth, int alpha, int beta, int sply, int was_null) {
        Stalemate returns 0 (draw). */
     if (!legal) return node_in_check ? -(MATE - sply) : 0;
 
-    /* TT store: skip if search was aborted mid-tree (score is meaningless) */
+    /* TT store: skip if search was aborted mid-tree */
     if (!time_over_flag && (e->key != hash_key || depth >= (int)tt_depth(e))) {
         int flag = (best_sc <= old_alpha) ? TT_ALPHA :
             (best_sc >= beta) ? TT_BETA : TT_EXACT;
@@ -1818,47 +1817,43 @@ int search(int depth, int alpha, int beta, int sply, int was_null) {
 
 void search_root(int max_depth) {
     int sc = 0, prev_sc = 0;
-    time_over_flag = 0; best_root_move = 0; t_start = clock();
-    memset(hist, 0, sizeof(hist)); memset(killers, 0, sizeof(killers));
+    int d;
+    best_root_move = 0;
+    time_over_flag = 0; t_start = clock();
+#ifdef FULL
     memset(pv, 0, sizeof(pv)); memset(pv_length, 0, sizeof(pv_length));
     nodes_searched = 0;
-    root_ply = ply;   /* anchor sply=0 at the search root */
+#endif
+    memset(hist, 0, sizeof(hist)); memset(killers, 0, sizeof(killers));
+    root_ply = ply;
 
-    for (root_depth = 1; root_depth <= max_depth; root_depth++) {
-        if (root_depth < 5) {
-            /* Full window for early depths: score too volatile for a narrow window. */
-            sc = search(root_depth, -INF, INF, 0, 0);
+    for (d = 1; d <= max_depth; d++) {
+#ifdef FULL
+        root_depth = d;
+#endif
+        if (d < 5) {
+            sc = search(d, -INF, INF, 0, 0);
         } else {
-            /* ASPIRATION WINDOWS
-               Initial delta scales with score magnitude: unbalanced positions
-               (large |prev_sc|) are more volatile so they get a wider window.
-               On fail-low: collapse beta to the midpoint before widening alpha,
-               avoiding a needlessly large window on the high side.
-               On fail-high: widen beta only.
-               Proportional widening (delta += delta/2) is smoother than doubling. */
             int delta = 15 + prev_sc * prev_sc / 16384;
             int alpha = max(prev_sc - delta, -INF);
             int beta  = min(prev_sc + delta,  INF);
             while (1) {
-                sc = search(root_depth, alpha, beta, 0, 0);
+                sc = search(d, alpha, beta, 0, 0);
                 if (time_over_flag) break;
                 if (sc <= alpha) {
-                    beta  = (alpha + beta) / 2; /* midpoint collapse */
+                    beta  = (alpha + beta) / 2;
                     alpha = max(alpha - delta, -INF);
                 } else if (sc >= beta) {
                     beta = min(beta + delta, INF);
                 } else {
-                    break;                      /* exact score within window */
+                    break;
                 }
-                delta += delta / 2;             /* proportional widening */
+                delta += delta / 2;
             }
         }
         if (time_over_flag) break;
         prev_sc = sc;
 
-        /* TIME CONTROL: stop iterating if we have used our budget.
-           We check AFTER a depth completes, never mid-search, so
-           the move we return is always from a fully searched depth. */
         {
             int64_t ms = (int64_t)(((int64_t)(clock() - t_start) * 1000) / CLOCKS_PER_SEC);
             if (time_budget_ms > 0 && ms >= time_budget_ms / 2) break;
@@ -1888,6 +1883,7 @@ void search_root(int max_depth) {
    the numbers are fully deterministic.
 */
 
+#ifdef FULL
 int64_t perft(int depth) {
     if (!depth) return 1;
     Move moves[256];
@@ -1900,6 +1896,7 @@ int64_t perft(int depth) {
     }
     return n;
 }
+#endif
 
 /* ===============================================================
    S13  UCI LOOP
@@ -1956,10 +1953,15 @@ void uci_loop(void) {
             parse_fen(STARTPOS); hash_key = generate_hash();
         }
         else if (!strncmp(line, "uci", 3)) {
-            puts("id name Chal " CHAL_VERSION "\nid author Naman Thanki\noption name Hash type spin default 16 min 1 max 4096\nuciok"); fflush(stdout);
+#ifdef FULL
+            puts("id name Chal " CHAL_VERSION "\nid author Naman Thanki\noption name Hash type spin default 16 min 1 max 4096\nuciok");
+#else
+            puts("id name Chal\nid author Naman Thanki\nuciok");
+#endif
+            fflush(stdout);
         }
+#ifdef FULL
         else if (!strncmp(line, "setoption", 9)) {
-            /* setoption name Hash value <N>  (N in megabytes) */
             char* nptr = strstr(line, "name Hash value ");
             if (nptr) {
                 int mb = 1; sscanf(nptr + 16, "%d", &mb); if (mb < 1) mb = 1;
@@ -1968,11 +1970,14 @@ void uci_loop(void) {
                 if (new_tt) { free(tt); tt = new_tt; tt_size = new_size; }
             }
         }
+#endif
         else if (!strncmp(line, "isready", 7)) { printf("readyok\n"); fflush(stdout); }
+#ifdef FULL
         else if (!strncmp(line, "perft", 5)) {
             int depth = 4; sscanf(line, "perft %d", &depth);
             printf("perft depth %d nodes %" PRId64 "\n", depth, perft(depth)); fflush(stdout);
         }
+#endif
         else if (!strncmp(line, "position", 8)) {
             if (strlen(line) <= 9) continue;
             p = line + 9;
@@ -2029,7 +2034,6 @@ void uci_loop(void) {
 
             int  depth = MAX_PLY;
             int64_t wtime = 0, btime = 0, movestogo = 20, winc = 0, binc = 0;
-
             getval(line, "depth", "%d", &depth);
             getval(line, "wtime", "%" SCNd64, &wtime);
             getval(line, "btime", "%" SCNd64, &btime);

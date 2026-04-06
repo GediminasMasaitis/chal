@@ -16,3 +16,5 @@ chal
 dev_test*
 
 .venv
+chal_mini.c
+*.xz
