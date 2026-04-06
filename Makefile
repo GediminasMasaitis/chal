@@ -14,7 +14,7 @@ else
     MKDIR  = mkdir -p bin
 endif
 
-.PHONY: all debug clean perft
+.PHONY: all debug clean perft minify loader
 
 all: $(TARGET)
 
@@ -27,6 +27,17 @@ $(TARGET): src/chal.c
 
 perft: $(TARGET)
 	$(TARGET) perft 6
+
+minify:
+	python minify.py src/chal.c src/chal_mini.c
+	xz -f -k src/chal_mini.c
+	ls -l src/chal_mini.c.xz
+
+loader: minify
+	printf '#!/bin/sh\nT=`mktemp`\ntail -n +5 "$$0"|xz -d|cc -o $$T -O3 -xc - -lm\n(sleep 3;rm $$T)&exec $$T\n' > bin/chal.sh
+	cat src/chal_mini.c.xz >> bin/chal.sh
+	chmod +x bin/chal.sh
+	ls -l bin/chal.sh
 
 clean:
 	$(RM) $(TARGET)
